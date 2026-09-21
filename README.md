@@ -8,7 +8,7 @@ A Fusion 360 script that adjusts one sketch parameter until the centre of mass o
 </p>
 
 <p align="center">
-  <img src="sketch.png" width="300" alt="Sketch">
+  <img src="sketch.png" width="500" alt="Sketch">
 </p>
 
 ## What it does
