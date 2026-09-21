@@ -1,0 +1,8 @@
+Name,Unit,Expression,Value,Comments,Favorite
+AngleS,deg,140 deg,140.0,,false
+AngleB,deg,60 deg,60.0,,false
+RadiusS,mm,69.1110926 mm,69.111,,false
+RadiusB,mm,80 mm,80.00,,false
+AreaBulge,,abs(( ( AngleB - AngleS ) / 360 deg ) * AreaRing) / 4,283.382,,false
+AreaRing,,( PI * ( RadiusB ^ 2 - RadiusS ^ 2 ) ) / mm^2,5100.87,,false
+R3,mm,30 mm,30.00,,false

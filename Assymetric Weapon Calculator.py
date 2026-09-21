@@ -26,7 +26,8 @@ SKETCH_NAME = ''              # '' = the sketch with the most profiles
 BODY_NAME = ''                # '' = the only solid body in the sketch's component
 
 TARGET = 'circle'             # 'circle' = centre of a sketch circle, 'origin' = sketch origin
-TARGET_CIRCLE_DIA_MM = 40.0   # which circle; None = the circle closest to the sketch origin
+TARGET_CIRCLE_DIA_MM = None   # None = the circle closest to the sketch origin,
+                              # or a diameter in mm to pick a specific circle
 
 CONFIRM_BEFORE_RUN = True
 
