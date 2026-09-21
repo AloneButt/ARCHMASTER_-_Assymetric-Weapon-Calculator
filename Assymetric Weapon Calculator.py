@@ -1,14 +1,17 @@
-# Fusion 360 - Surface area equalizer
+# Fusion 360 - Centre-of-mass balancer (single body)
 #
-# Drives a user parameter until two regions have equal area.
+# Drives one user parameter until the body's centre of mass lies on the
+# centre of a sketch circle, measured in the sketch plane.
 #
-# MODE 'profiles' (default): uses the closed profiles of a sketch, split by a
-#   horizontal line. No bodies required. Profiles are re-found on every
-#   iteration because they are invalidated by each rebuild.
-# MODE 'bodies': uses the largest planar face of two named bodies.
+# Before solving it runs a pre-flight check: finds the sketch, body and target,
+# reports the body thickness and extrude feature, and asks for confirmation.
 #
-# Root finder: Illinois (modified regula falsi). Bracketed like bisection but
-# converges superlinearly, so ~8 rebuilds instead of ~160.
+# Thickness does not change the solution: for a constant-thickness extrusion the
+# in-plane centre of mass equals the sketch-area centroid. It only sets where the
+# centre of mass sits along the extrusion axis (mid-thickness), which does not
+# affect balance about an axis perpendicular to the sketch.
+#
+# Root finder: Illinois (modified regula falsi), bracketed by an initial scan.
 
 import adsk.core, adsk.fusion, traceback
 
@@ -17,40 +20,31 @@ UI = APP.userInterface
 
 # ============================ USER SETTINGS ============================
 
-PARAM_NAME = 'RadiusS'      # parameter to solve for
+PARAM_NAME = 'RadiusS'
 
-MODE = 'profiles'           # 'profiles' or 'bodies'
+SKETCH_NAME = ''              # '' = the sketch with the most profiles
+BODY_NAME = ''                # '' = the only solid body in the sketch's component
 
-# --- MODE 'profiles' ---
-SKETCH_NAME = ''            # '' = auto-pick the sketch with the most profiles
-SPLIT_Y_MM = 0.0            # sketch-space Y that separates top from bottom
-PROFILE_PICK = 'SUM'        # was 'largest' = one profile per side, but due to the fact that there are now more than 2 profiles, switched tum 'SUM'
-                            # 'sum'     = add up every profile on each side
-MIN_PROFILE_AREA_MM2 = 1.0  # ignore slivers below this
+TARGET = 'circle'             # 'circle' = centre of a sketch circle, 'origin' = sketch origin
+TARGET_CIRCLE_DIA_MM = 40.0   # which circle; None = the circle closest to the sketch origin
 
-# --- MODE 'bodies' ---
-TOP_BODY_NAME = 'TopSurf'
-BOT_BODY_NAME = 'BotSurf'
+CONFIRM_BEFORE_RUN = True
 
-# --- search range, in the parameter's own display units ---
-# Leave both None to auto-bracket at +/- RANGE_FRACTION around the current value.
+# search range, in the parameter's display units (None = auto around current value)
 R_MIN = None
 R_MAX = None
 RANGE_FRACTION = 0.45
-SCAN_SAMPLES = 9            # samples used to locate a sign change
+SCAN_SAMPLES = 9
 
-# --- convergence ---
-AREA_TOL_MM2 = 1.0e-3       # stop when |top - bottom| is below this
-R_TOL_FRACTION = 1.0e-6     # stop when the bracket is this fraction of the value
+COM_TOL_MM = 1.0e-4           # stop when the in-plane offset is below this
+R_TOL_FRACTION = 1.0e-7
 MAX_EVALS = 40
 
 RESTORE_ON_FAILURE = True
 
 # =======================================================================
 
-CM2_TO_MM2 = 100.0          # Fusion internal area unit is cm^2
-MM_TO_CM = 0.1
-
+CM_TO_MM = 10.0
 HIGH_ACC = adsk.fusion.CalculationAccuracy.HighCalculationAccuracy
 
 
@@ -64,32 +58,29 @@ def run(context):
             UI.messageBox('Open a Fusion design first.')
             return
 
-        param = design.userParameters.itemByName(PARAM_NAME)
-        if not param:
-            param = design.allParameters.itemByName(PARAM_NAME)
+        param = design.userParameters.itemByName(PARAM_NAME) or \
+                design.allParameters.itemByName(PARAM_NAME)
         if not param:
             UI.messageBox('Parameter "{}" not found.'.format(PARAM_NAME))
             return
 
-        original_value = param.value          # internal units
+        original_value = param.value
         units = design.unitsManager
 
-        def show(v_internal):
-            return units.formatInternalValue(v_internal, param.unit, True)
+        def show(v):
+            return units.formatInternalValue(v, param.unit, True)
 
         def to_internal(display_value):
             return units.evaluateExpression('{}'.format(display_value), param.unit)
 
-        # ---------------- parameter driving ----------------
-
-        def set_param(v_internal):
-            param.value = v_internal
+        def set_param(v):
+            param.value = v
             adsk.doEvents()
             if design.designType == adsk.fusion.DesignTypes.ParametricDesignType:
                 design.computeAll()
             adsk.doEvents()
 
-        # ---------------- area measurement ----------------
+        # ---------------- lookup (re-run after every rebuild) ----------------
 
         def find_sketch():
             best, best_count = None, -1
@@ -98,97 +89,161 @@ def run(context):
                     if SKETCH_NAME:
                         if sk.name == SKETCH_NAME:
                             return sk
-                    else:
-                        n = sk.profiles.count
-                        if n > best_count:
-                            best, best_count = sk, n
+                    elif sk.profiles.count > best_count:
+                        best, best_count = sk, sk.profiles.count
             if SKETCH_NAME:
                 raise RuntimeError('Sketch "{}" not found.'.format(SKETCH_NAME))
-            if not best or best_count < 2:
-                raise RuntimeError('No sketch with at least two closed profiles was found.')
+            if not best:
+                raise RuntimeError('No sketch found.')
             return best
 
-        def profile_areas():
-            """Returns (top_mm2, bottom_mm2, detail_rows)."""
-            sk = find_sketch()
-            split_cm = SPLIT_Y_MM * MM_TO_CM
-            tops, bots, rows = [], [], []
-
-            for i in range(sk.profiles.count):
-                prof = sk.profiles.item(i)
-                props = prof.areaProperties(HIGH_ACC)
-                area_mm2 = props.area * CM2_TO_MM2
-                if area_mm2 < MIN_PROFILE_AREA_MM2:
-                    continue
-                # centroid comes back in model space -> convert to sketch space
-                c = sk.modelToSketchSpace(props.centroid)
-                rows.append((i, area_mm2, c.y / MM_TO_CM))
-                if c.y > split_cm:
-                    tops.append(area_mm2)
-                else:
-                    bots.append(area_mm2)
-
-            if not tops or not bots:
-                raise RuntimeError(
-                    'Could not find profiles on both sides of Y = {} mm.\n'
-                    'Sketch "{}" gave {} usable profile(s).'
-                    .format(SPLIT_Y_MM, sk.name, len(rows)))
-
-            if PROFILE_PICK == 'largest':
-                return max(tops), max(bots), rows
-            return sum(tops), sum(bots), rows
-
-        def find_body(name):
-            for comp in design.allComponents:
-                for b in comp.bRepBodies:
-                    if b.name == name:
+        def find_body(sk):
+            comp = sk.parentComponent
+            solids = [b for b in comp.bRepBodies if b.isSolid]
+            if BODY_NAME:
+                for b in solids:
+                    if b.name == BODY_NAME:
                         return b
+                raise RuntimeError('Body "{}" not found in component "{}".'
+                                   .format(BODY_NAME, comp.name))
+            if len(solids) != 1:
+                raise RuntimeError('Component "{}" has {} solid bodies ({}). Set BODY_NAME.'
+                                   .format(comp.name, len(solids),
+                                           ', '.join(b.name for b in solids) or 'none'))
+            return solids[0]
+
+        def target_point(sk):
+            """Target in sketch space, mm."""
+            if TARGET == 'origin':
+                return 0.0, 0.0
+            best, best_score = None, None
+            for c in sk.sketchCurves.sketchCircles:
+                g = c.centerSketchPoint.geometry
+                if TARGET_CIRCLE_DIA_MM is not None:
+                    score = abs(c.radius * 2.0 * CM_TO_MM - TARGET_CIRCLE_DIA_MM)
+                else:
+                    score = (g.x ** 2 + g.y ** 2) ** 0.5
+                if best_score is None or score < best_score:
+                    best, best_score = c, score
+            if best is None:
+                raise RuntimeError('Sketch "{}" has no circles.'.format(sk.name))
+            if TARGET_CIRCLE_DIA_MM is not None and best_score > 0.01:
+                raise RuntimeError('No circle of diameter {} mm in sketch "{}".'
+                                   .format(TARGET_CIRCLE_DIA_MM, sk.name))
+            g = best.centerSketchPoint.geometry
+            return g.x * CM_TO_MM, g.y * CM_TO_MM
+
+        def body_span(sk, body):
+            """Extent of the body along the sketch normal, mm (sketch-space z)."""
+            zs = [sk.modelToSketchSpace(v.geometry).z * CM_TO_MM for v in body.vertices]
+            if not zs:
+                raise RuntimeError('Body "{}" has no vertices to measure.'.format(body.name))
+            return min(zs), max(zs)
+
+        def extrude_info(sk, body):
+            comp = sk.parentComponent
+            for ef in comp.features.extrudeFeatures:
+                try:
+                    if not any(b.name == body.name for b in ef.bodies):
+                        continue
+                except Exception:
+                    continue
+                info = {'name': ef.name, 'type': 'unknown', 'expr': ''}
+                try:
+                    types = adsk.fusion.FeatureExtentTypes
+                    info['type'] = {
+                        types.OneSideFeatureExtentType: 'one side',
+                        types.TwoSidesFeatureExtentType: 'two sides',
+                        types.SymmetricFeatureExtentType: 'symmetric',
+                    }.get(ef.extentType, 'other')
+                except Exception:
+                    pass
+                try:
+                    d = adsk.fusion.DistanceExtentDefinition.cast(ef.extentOne)
+                    if d:
+                        info['expr'] = d.distance.expression
+                    s = adsk.fusion.SymmetricExtentDefinition.cast(ef.extentOne)
+                    if s:
+                        info['expr'] = s.distance.expression + \
+                            (' (full length)' if s.isFullLength else ' (per side)')
+                except Exception:
+                    pass
+                return info
             return None
 
-        def largest_planar_area_mm2(name):
-            b = find_body(name)
-            if not b:
-                raise RuntimeError('Body "{}" not found.'.format(name))
-            areas = []
-            for f in b.faces:
-                geom = f.geometry
-                if geom and geom.surfaceType == adsk.core.SurfaceTypes.PlaneSurfaceType:
-                    areas.append(f.area * CM2_TO_MM2)
-            if not areas:
-                raise RuntimeError('Body "{}" has no planar faces.'.format(name))
-            return max(areas)
+        def measure():
+            sk = find_sketch()
+            body = find_body(sk)
+            tx, ty = target_point(sk)
+            if hasattr(body, 'getPhysicalProperties'):
+                pp = body.getPhysicalProperties(HIGH_ACC)
+            else:
+                pp = body.physicalProperties
+            com = pp.centerOfMass
+            s = sk.modelToSketchSpace(com)
+            return {
+                'dx': s.x * CM_TO_MM - tx,
+                'dy': s.y * CM_TO_MM - ty,
+                'z': s.z * CM_TO_MM,
+                'model': (com.x * CM_TO_MM, com.y * CM_TO_MM, com.z * CM_TO_MM),
+                'mass_g': pp.mass * 1000.0,
+                'volume_mm3': pp.volume * 1000.0,
+                'body': body.name,
+                'sketch': sk.name,
+                'target': (tx, ty),
+            }
 
-        def body_areas():
-            return (largest_planar_area_mm2(TOP_BODY_NAME),
-                    largest_planar_area_mm2(BOT_BODY_NAME),
-                    [])
+        # ---------------- pre-flight ----------------
 
-        measure = profile_areas if MODE == 'profiles' else body_areas
+        sk = find_sketch()
+        body = find_body(sk)
+        tx, ty = target_point(sk)
+        zmin, zmax = body_span(sk, body)
+        thickness = zmax - zmin
+        ext = extrude_info(sk, body)
+        m0 = measure()
+
+        pre = 'Pre-flight check\n'
+        pre += '  Component : {}\n'.format(sk.parentComponent.name)
+        pre += '  Sketch    : {}\n'.format(sk.name)
+        pre += '  Body      : {}\n'.format(body.name)
+        pre += '  Target    : sketch X {:+.4f}  Y {:+.4f} mm\n'.format(tx, ty)
+        pre += '  Thickness : {:.4f} mm measured normal to the sketch\n'.format(thickness)
+        pre += '              body spans {:+.4f} to {:+.4f} mm from the sketch plane\n'.format(zmin, zmax)
+        if ext:
+            pre += '  Extrude   : {} - {}{}\n'.format(
+                ext['name'], ext['type'], ', ' + ext['expr'] if ext['expr'] else '')
+        else:
+            pre += '  Extrude   : feature not identified (reporting measured thickness only)\n'
+        pre += '  {} now : {}\n'.format(PARAM_NAME, show(original_value))
+        pre += '  COM offset now : dX {:+.4f}  dY {:+.4f} mm\n'.format(m0['dx'], m0['dy'])
+        pre += '  Mass      : {:.2f} g\n'.format(m0['mass_g'])
+
+        if CONFIRM_BEFORE_RUN:
+            res = UI.messageBox(pre + '\nRun the balance solve?', 'Centre-of-mass balancer',
+                                adsk.core.MessageBoxButtonTypes.YesNoButtonType,
+                                adsk.core.MessageBoxIconTypes.QuestionIconType)
+            if res != adsk.core.DialogResults.DialogYes:
+                return
 
         # ---------------- objective ----------------
 
         cache = {}
 
-        def f(v_internal):
-            key = round(v_internal, 12)
-            if key in cache:
-                return cache[key]
-            set_param(v_internal)
-            top, bot, _ = measure()
-            result = (top, bot, top - bot)
-            cache[key] = result
-            return result
+        def f(v):
+            key = round(v, 12)
+            if key not in cache:
+                set_param(v)
+                cache[key] = measure()['dy']
+            return cache[key]
 
         # ---------------- bracket ----------------
 
         if R_MIN is None or R_MAX is None:
-            span = abs(original_value) * RANGE_FRACTION
-            if span == 0.0:
-                span = to_internal('10 mm')
+            span = abs(original_value) * RANGE_FRACTION or to_internal('10 mm')
             lo, hi = original_value - span, original_value + span
         else:
             lo, hi = to_internal(R_MIN), to_internal(R_MAX)
-
         if lo <= 0:
             lo = min(hi * 0.05, to_internal('0.1 mm'))
 
@@ -196,70 +251,50 @@ def run(context):
         for i in range(SCAN_SAMPLES):
             v = lo + (hi - lo) * i / (SCAN_SAMPLES - 1)
             try:
-                top, bot, diff = f(v)
-                samples.append((v, diff, top, bot))
+                samples.append((v, f(v)))
             except Exception:
-                samples.append((v, None, None, None))
+                samples.append((v, None))
+
+        scan_report = 'Scan of {} over [{}, {}]  (COM dY, mm):\n'.format(
+            PARAM_NAME, show(lo), show(hi))
+        for v, val in samples:
+            scan_report += '  {:>12}  ->  {}\n'.format(
+                show(v), 'rebuild failed' if val is None else '{:+.6f}'.format(val))
 
         valid = [s for s in samples if s[1] is not None]
         if len(valid) < 2:
             raise RuntimeError('The model failed to rebuild across the scanned range.')
 
-        scan_report = 'Scan of {} over [{}, {}]:\n'.format(
-            PARAM_NAME, show(lo), show(hi))
-        for v, diff, top, bot in samples:
-            if diff is None:
-                scan_report += '  {:>12}  ->  rebuild failed\n'.format(show(v))
-            else:
-                scan_report += '  {:>12}  ->  top {:10.4f}   bottom {:10.4f}   diff {:+10.4f}\n'.format(
-                    show(v), top, bot, diff)
-
-        a = b = None
-        for i in range(len(valid) - 1):
-            v1, d1 = valid[i][0], valid[i][1]
-            v2, d2 = valid[i + 1][0], valid[i + 1][1]
-            if d1 == 0.0:
-                a, fa, b, fb = v1, d1, v1, d1
-                break
-            if d1 * d2 < 0.0:
+        a = b = fa = fb = None
+        for (v1, d1), (v2, d2) in zip(valid, valid[1:]):
+            if d1 == 0.0 or d1 * d2 < 0.0:
                 a, fa, b, fb = v1, d1, v2, d2
                 break
 
         if a is None:
             if RESTORE_ON_FAILURE:
                 set_param(original_value)
-            UI.messageBox(
-                scan_report +
-                '\nNo sign change found - the areas never cross in this range.\n'
-                'Widen RANGE_FRACTION or set R_MIN / R_MAX explicitly.')
+            UI.messageBox(scan_report +
+                          '\nNo sign change in this range - the centre of mass never crosses '
+                          'the target.\nWiden RANGE_FRACTION or set R_MIN / R_MAX.')
             return
 
         # ---------------- Illinois root finder ----------------
 
         r_tol = max(abs(original_value), 1e-6) * R_TOL_FRACTION
         side = 0
-        evals = len(cache)
-        root, froot = None, None
+        root = a if fa == 0.0 else None
 
-        if fa == 0.0:
-            root, froot = a, 0.0
-
-        while root is None and evals < MAX_EVALS:
-            if fb == fa:
-                c = 0.5 * (a + b)
-            else:
-                c = b - fb * (b - a) / (fb - fa)
+        while root is None and len(cache) < MAX_EVALS:
+            c = 0.5 * (a + b) if fb == fa else b - fb * (b - a) / (fb - fa)
             span = abs(b - a)
             if not (min(a, b) + 0.01 * span <= c <= max(a, b) - 0.01 * span):
                 c = 0.5 * (a + b)
+            fc = f(c)
 
-            top, bot, fc = f(c)
-            evals = len(cache)
-
-            if abs(fc) <= AREA_TOL_MM2 or abs(b - a) <= r_tol:
-                root, froot = c, fc
+            if abs(fc) <= COM_TOL_MM or abs(b - a) <= r_tol:
+                root = c
                 break
-
             if fa * fc < 0.0:
                 b, fb = c, fc
                 if side == -1:
@@ -273,34 +308,33 @@ def run(context):
 
         if root is None:
             root = 0.5 * (a + b)
-            top, bot, froot = f(root)
 
-        # lock the model at the solution
+        # ---------------- lock and report ----------------
+
         set_param(root)
-        top, bot, diff = measure()[0], measure()[1], 0.0
-        top, bot, _ = measure()
-        diff = top - bot
+        m = measure()
+        mid = 0.5 * (zmin + zmax)
+        converged = abs(m['dy']) <= COM_TOL_MM
 
-        detail = ''
-        if MODE == 'profiles':
-            _, _, rows = profile_areas()
-            detail = '\nProfiles at the solution (index, area mm^2, centroid Y mm):\n'
-            for idx, area, cy in rows:
-                detail += '  #{}  {:10.4f}  {:+9.3f}\n'.format(idx, area, cy)
+        msg = scan_report + '\n'
+        msg += ('Converged.' if converged else 'Stopped before full convergence.') + '\n'
+        msg += '  {} = {}\n'.format(PARAM_NAME, show(root))
+        msg += '  In-plane COM offset : dX {:+.6f}  dY {:+.6f} mm\n'.format(m['dx'], m['dy'])
+        msg += '  Along extrusion     : {:+.4f} mm from sketch plane (mid-thickness {:+.4f})\n'.format(
+            m['z'], mid)
+        msg += '  Model COM (as in Properties): X {:+.4f}  Y {:+.4f}  Z {:+.4f} mm\n'.format(
+            *m['model'])
+        msg += '  Mass = {:.2f} g   Rebuilds = {}\n'.format(m['mass_g'], len(cache) + 1)
 
-        converged = abs(diff) <= AREA_TOL_MM2 or abs(b - a) <= r_tol
-        header = 'Areas equalized.' if converged else 'Stopped before full convergence.'
+        if abs(m['z'] - mid) > 0.01:
+            msg += ('\nNote: the centre of mass is not at mid-thickness, so the body is not a '
+                    'plain constant-thickness extrusion (pockets, chamfers or one-sided features). '
+                    'The in-plane result is still correct for the body as modelled.')
+        if abs(m['dx']) > 10 * COM_TOL_MM:
+            msg += ('\nWarning: X offset is not zero. The geometry is not symmetric about the '
+                    'sketch Y axis, and {} alone cannot correct that.'.format(PARAM_NAME))
 
-        UI.messageBox(
-            scan_report + '\n' + header + '\n'
-            '  {} = {}\n'
-            '  Top area    = {:.6f} mm^2\n'
-            '  Bottom area = {:.6f} mm^2\n'
-            '  Difference  = {:+.6f} mm^2\n'
-            '  Rebuilds    = {}\n'
-            '  Bracket     = {} wide'
-            .format(PARAM_NAME, show(root), top, bot, diff,
-                    len(cache), show(abs(b - a))) + detail)
+        UI.messageBox(msg)
 
     except:
         try:
