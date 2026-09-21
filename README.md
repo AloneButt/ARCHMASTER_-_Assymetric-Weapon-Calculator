@@ -53,3 +53,6 @@ The settings are at the top of `com_balancer.py`.
 - If the sketch is on the XZ plane, the Properties dialog shows the centre of mass at Y = ± half the thickness. This is expected.
 - The script only corrects the offset perpendicular to the split line. The other in-plane offset should be zero if the sketch is symmetric.
 - If the solve fails, the parameter is restored to its original value.
+
+
+The script is created to help designed to create spinner-type assymetric weapons for battlebots tournaments.
