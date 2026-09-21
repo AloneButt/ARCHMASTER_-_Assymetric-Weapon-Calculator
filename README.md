@@ -55,4 +55,13 @@ The settings are at the top of `com_balancer.py`.
 - If the solve fails, the parameter is restored to its original value.
 
 
+## Purpose
+
 The script is created to help design spinner-type assymetric weapons for battlebots tournaments.
+
+
+## License
+
+MIT - see [LICENSE](LICENSE). Free to use, modify and share.
+
+If you use this script in a project, video or publication, a mention or a link back would be appreciated.
