@@ -2,7 +2,14 @@
 
 A Fusion 360 script that adjusts one sketch parameter until the centre of mass of a body lies on the centre of a sketch circle.
 
-![Sketch](sketch.png)
+<p align="center">
+  <img src="example.png" width="300" alt="Example 1">
+  <img src="example2.png" width="300" alt="Example 2">
+</p>
+
+<p align="center">
+  <img src="sketch.png" width="300" alt="Sketch">
+</p>
 
 ## What it does
 
