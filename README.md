@@ -9,7 +9,7 @@ A Fusion 360 add-in that balances asymmetric spinner weapons for combat robots. 
 
 ## What it does
 
-You select the bodies that spin and point at the spin axis. The add-in then measures every sketch dimension (`d1`, `d2`, ...) and shows, right in the list, how far each one moves the centre of mass and how much of the offset it can fix. It also recommends the best dimensions to change. You tick the ones it may adjust. Everything else stays exactly as it is. It adjusts the ticked dimensions until the centre of mass sits on the axis, and leaves them at those values.
+You select the bodies that spin and point at the spin axis. The add-in then measures every sketch dimension (`d1`, `d2`, ...) and shows, right in the list, how far each one moves the centre of mass and how much of the offset it can fix. You decide which of them are acceptable to change in your design, and tick those. Everything else stays exactly as it is. It adjusts the ticked dimensions until the centre of mass sits on the axis, and leaves them at those values.
 
 When more than two dimensions are ticked there are usually many balanced designs, so the add-in picks the one that changes your design the least: the smallest overall proportional change. Dimensions that don't affect the balance are left alone.
 
@@ -36,8 +36,8 @@ The **Balance Weapon** button appears in its own **ARCHMASTER** tab in the Desig
 2. **Weapon bodies**: select every body that spins with the weapon.
 3. **Spin axis**: click the field, then select the bore face or edge, a sketch circle, or a construction axis.
 4. Wait for the analysis. The add-in changes each dimension by 0.2 % in turn to measure its effect, with a progress bar you can cancel. This uses Fusion's preview, and every dimension is restored afterwards, so the design is not changed. It runs again only when you change the bodies or the axis, or click **Re-analyse**.
-5. Read the summary. It says how many dimensions affect the balance and lists the three best choices to balance both directions, with the estimated change for each. Choices that need more than the **Max change** limit are marked.
-6. **Dimensions to change**: tick the dimensions the add-in may adjust, or click **Tick best choice**. Each entry shows its effect, for example `d7 = 69.111 mm · Weapon — 0.267 mm/%, alone fixes 61 % at -8.0 %` (see [Reading the dimension list](#reading-the-dimension-list)).
+5. Read the summary. It lists every dimension that moves the centre of mass, strongest first, with what a +1 % change does in each direction and how much of the offset it can fix on its own. Dimensions with no effect, and dimensions that break the model, are listed separately.
+6. **Dimensions to change**: tick the dimensions the add-in may adjust. Only you know which changes keep the weapon usable (tooth geometry, clearances, strength), so the add-in doesn't pick for you. Each entry shows its effect, for example `d7 = 69.111 mm · Weapon — 0.267 mm/%, alone fixes 61 % at -8.0 %` (see [Reading the dimension list](#reading-the-dimension-list)).
 7. Below the list, a line tells you instantly whether the ticked dimensions can balance both directions and how much they would change.
 8. Click **Balance**.
 
@@ -65,7 +65,7 @@ The centre-of-mass offset has two components, so you need at least two dimension
 - **`no effect`**: this dimension doesn't move the centre of mass, for example the bore, or a dimension in another sketch.
 - **`breaks the model`**: a small change makes a sketch or feature fail.
 
-The best pair is usually one dimension with a high "fixes" share plus one that pushes sideways to it. The recommended choices are worked out for you.
+A good pair is usually one dimension with a high "fixes" share plus one that pushes sideways to it. A dimension can move the centre of mass exactly the right way and still ruin the weapon, for example by thinning the tooth or shrinking the counterweight until it's weak, so only tick dimensions you are happy to see change.
 
 When you tick dimensions, the check below the list gives one of these verdicts:
 

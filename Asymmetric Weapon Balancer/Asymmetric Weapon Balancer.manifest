@@ -4,11 +4,11 @@
 	"id": "64b672d1-15d6-4b81-9f1c-495042d5aecc",
 	"author": "Soso Chkhortolia @ ARCHMASTER",
 	"description": {
-		"": "Balances asymmetric spinner weapons: drives a user parameter until the centre of mass lies on the spin axis."
+		"": "Balances asymmetric spinner weapons: adjusts the sketch dimensions you choose until the centre of mass lies on the spin axis in both directions."
 	},
-	"version": "2.0.0",
+	"version": "2.1.0",
 	"runOnStartup": true,
 	"supportedOS": "windows|mac",
 	"editEnabled": true,
-	"iconFilename": "resources/32x32.png"
+	"iconFilename": "resources/AddinIcon.png"
 }

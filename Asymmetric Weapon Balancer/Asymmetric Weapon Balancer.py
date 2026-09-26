@@ -11,8 +11,9 @@
 #   1. Analysis. As soon as the bodies and axis are chosen, every dimension is
 #      nudged by a small step (inside Fusion's command preview, and restored)
 #      to measure how it moves the centre of mass. The list then shows each
-#      dimension's effect, and the dialog recommends the smallest sets that
-#      can cancel the offset in both directions. Ticking dimensions gives an
+#      dimension's effect, and the summary lists every dimension that moves
+#      the centre of mass and what it does, so you choose what is acceptable
+#      to change in your design. Ticking dimensions gives an
 #      instant controllability verdict for that set (singular values of the
 #      2 x n sensitivity matrix, plus a linear estimate of the change needed
 #      against the allowed +/- %). If balance looks impossible when you click
@@ -627,34 +628,6 @@ def rate_dimensions(per_pct, r0, pct, dead=()):
     return out
 
 
-def recommend(per_pct, r0, usable, top=3):
-    """Smallest sets of dimensions that cancel the offset (linear estimate).
-
-    Single dimensions qualify only when they push the centre of mass straight at
-    the axis; otherwise pairs pushing in clearly different directions (> ~6 deg).
-    Returns [(worst %, [indices], [changes %])], smallest worst change first.
-    """
-    out = []
-    if math.hypot(*r0) <= COM_TOL_MM:
-        return out
-    for i in usable:
-        dx, dy = per_pct[i]
-        k = -(r0[0] * dx + r0[1] * dy) / (dx * dx + dy * dy)
-        if math.hypot(r0[0] + k * dx, r0[1] + k * dy) <= 10 * COM_TOL_MM:
-            out.append((abs(k), [i], [k]))
-    for a_i, i in enumerate(usable):
-        for j in usable[a_i + 1:]:
-            a, b = per_pct[i], per_pct[j]
-            det = a[0] * b[1] - b[0] * a[1]
-            if abs(det) < 0.1 * math.hypot(*a) * math.hypot(*b):
-                continue
-            s = (-r0[0] * b[1] + b[0] * r0[1]) / det
-            t = (-a[0] * r0[1] + r0[0] * a[1]) / det
-            out.append((max(abs(s), abs(t)), [i, j], [s, t]))
-    out.sort(key=lambda rec: rec[0])
-    return out[:top]
-
-
 def solve_multi(evaluate, x0, scale, lo, hi, tick=None, initial=None):
     """Change x as little as possible (relative to scale) so evaluate(x) -> 0.
 
@@ -968,7 +941,7 @@ def control_lines(c, names, axis_names, pct, show_effects=True):
 
 _analysis = None          # None = not run yet; dict with results or {'error': text}
 _base_labels = []         # list labels without the analysis tag
-_recommended = []         # indices of the best recommended set
+_dim_sketch = []          # sketch name of each dimension, same order as _dim_names
 
 
 def analyse_all(design, bodies, axis_entity, pct):
@@ -1030,10 +1003,8 @@ def apply_analysis(design, inputs):
     """Write the analysis into the list labels and the summary; no rebuilds."""
     dd = _find(inputs, 'free')
     box = _find(inputs, 'analysis')
-    use_best = _find(inputs, 'useBest')
     pct = _find(inputs, 'pct').value
     an = _analysis
-    _recommended[:] = []
 
     if not an or 'error' in an:
         for i in range(min(dd.listItems.count, len(_base_labels))):
@@ -1046,7 +1017,6 @@ def apply_analysis(design, inputs):
             box.formattedText = ('Select the weapon bodies and the spin axis. Every dimension '
                                  'is then measured so you can see which ones move the centre '
                                  'of mass, and how.')
-        use_best.isEnabled = False
         update_selection_check(inputs)
         return
 
@@ -1055,30 +1025,45 @@ def apply_analysis(design, inputs):
         dd.listItems.item(i).name = '{}   \u2014 {}'.format(_base_labels[i], _tag(rates[i], pct))
 
     nx, ny = an['axis_names']
-    usable = [i for i, rt in enumerate(rates) if rt['kind'] == 'ok']
-    none = sum(1 for rt in rates if rt['kind'] == 'none')
-    dead = sum(1 for rt in rates if rt['kind'] == 'dead')
     names = an['names']
-    lines = ['<b>{} of {} dimensions move the centre of mass</b> ({} no effect{}).'.format(
-        len(usable), len(rates), none, ', {} break the model'.format(dead) if dead else '')]
-    lines.append('Offset now: {} {:+.4f}, {} {:+.4f} mm.'.format(nx, an['r0'][0], ny, an['r0'][1]))
+    usable = sorted((i for i, rt in enumerate(rates) if rt['kind'] == 'ok'),
+                    key=lambda i: -rates[i]['effect'])
+    none = [names[i] for i, rt in enumerate(rates) if rt['kind'] == 'none']
+    dead = [names[i] for i, rt in enumerate(rates) if rt['kind'] == 'dead']
+    balanced = math.hypot(*an['r0']) <= COM_TOL_MM
 
-    recs = recommend(an['per_pct'], an['r0'], usable)
-    if math.hypot(*an['r0']) <= COM_TOL_MM:
+    lines = ['<b>{} of {} dimensions move the centre of mass.</b> Offset now: '
+             '{} {:+.4f}, {} {:+.4f} mm.'.format(len(usable), len(rates),
+                                                  nx, an['r0'][0], ny, an['r0'][1])]
+    if usable:
+        lines.append('What +1 % of each does, strongest first. Check that the change '
+                     'suits your design before ticking it:')
+    for i in usable:
+        dx, dy = an['per_pct'][i]
+        rt = rates[i]
+        where = ' ({})'.format(_dim_sketch[i]) if i < len(_dim_sketch) and _dim_sketch[i] else ''
+        text = '{}{}: {} {:+.4f}, {} {:+.4f} mm'.format(names[i], where, nx, dx, ny, dy)
+        if not balanced:
+            if rt['share'] < 0.25:
+                text += ', pushes mostly sideways to the offset (alone fixes {:.0f} %)'.format(
+                    rt['share'] * 100.0)
+            else:
+                text += ', alone fixes {:.0f} % of the offset at {:+.1f} %'.format(
+                    rt['share'] * 100.0, rt['needed'])
+            if abs(rt['needed']) > pct and rt['share'] >= 0.25:
+                text += ' (over the \u00b1{} % limit)'.format(pct)
+        lines.append('&nbsp;&nbsp;\u2022 ' + html.escape(text, quote=False))
+    if none:
+        lines.append('No effect: {}.'.format(html.escape(_names(none, 30))))
+    if dead:
+        lines.append('Break the model when changed: {}.'.format(html.escape(_names(dead, 30))))
+    if balanced:
         lines.append('Already balanced.')
-    elif not recs:
-        lines.append('<b>No dimension or pair can balance both {} and {}.</b> The dimensions '
-                     'that have an effect all move the centre of mass along the same line.'
-                     .format(nx, ny))
-    else:
-        lines.append('Best choices to balance {} and {} (estimated change):'.format(nx, ny))
-        for k, (worst, idx, changes) in enumerate(recs):
-            text = ' + '.join('{} {:+.1f} %'.format(names[i], c) for i, c in zip(idx, changes))
-            flag = '' if worst <= pct else '  <i>(over the \u00b1{} % limit)</i>'.format(pct)
-            lines.append('&nbsp;&nbsp;{}. {}{}'.format(k + 1, html.escape(text), flag))
-        _recommended[:] = recs[0][1]
+    elif usable:
+        lines.append('To balance both {} and {}, tick at least two that push in different '
+                     'directions: one that fixes a large share plus one that pushes sideways. '
+                     'The line under the list checks your choice.'.format(nx, ny))
     box.formattedText = '<br>'.join(lines)
-    use_best.isEnabled = bool(_recommended)
     update_selection_check(inputs)
 
 
@@ -1189,12 +1174,9 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             sel.setSelectionLimits(1, 1)
             sel.tooltip = 'The shaft axis the weapon spins about.'
 
-            box = inputs.addTextBoxCommandInput('analysis', '', '', 6, True)
+            box = inputs.addTextBoxCommandInput('analysis', '', '', 12, True)
             box.isFullWidth = True
 
-            b = inputs.addBoolValueInput('useBest', 'Tick best choice', False, '', False)
-            b.tooltip = 'Ticks the recommended dimensions (choice 1) and unticks the rest.'
-            b.isEnabled = False
             b = inputs.addBoolValueInput('reanalyse', 'Re-analyse', False, '', False)
             b.tooltip = 'Measure every dimension again.'
 
@@ -1207,6 +1189,7 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             dims = sketch_dimensions(design)
             _dim_names[:] = [p.name for p, _, _ in dims]
             _base_labels[:] = []
+            _dim_sketch[:] = [sketch_name for _, sketch_name, _ in dims]
             chosen = set(prefs.get('free', []))
             units = design.unitsManager
             for p, sketch_name, driven in dims:
@@ -1284,14 +1267,9 @@ class InputChangedHandler(adsk.core.InputChangedEventHandler):
                 apply_analysis(design, inputs)
             elif changed.id == 'pct':
                 apply_analysis(design, inputs)
-            elif changed.id == 'useBest' and _recommended:
-                dd = _find(inputs, 'free')
-                for i in range(dd.listItems.count):
-                    dd.listItems.item(i).isSelected = i in _recommended
-                update_selection_check(inputs)
             elif changed.id == 'free':
                 update_selection_check(inputs)
-            if changed.id in ('bodies', 'axis', 'free', 'useBest'):
+            if changed.id in ('bodies', 'axis', 'free'):
                 update_status(design, inputs)
         except Exception:
             pass
